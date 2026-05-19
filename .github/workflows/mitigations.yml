@@ -1,0 +1,151 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 Sasha Levin <sashal@kernel.org>
+#
+# Manual-only workflow that exercises every script under mitigations/
+# inside a QEMU VM.  Heavyweight (clang in the initramfs, kernel
+# rebuild with more subsystems) — does NOT run on push/PR.  Trigger
+# from the Actions tab via "Run workflow", or `gh workflow run mitigations.yml`.
+
+name: mitigations
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mitigations:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            kbuild_image_path: arch/x86/boot/bzImage
+            qemu_bin: qemu-system-x86_64
+            qemu_pkg: qemu-system-x86
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            kbuild_image_path: arch/arm64/boot/Image
+            qemu_bin: qemu-system-aarch64
+            qemu_pkg: qemu-system-arm
+    name: ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build + qemu + clang deps
+        run: |
+          # Same retry / fallback-mirror dance as the default workflow,
+          # plus clang + libLLVM headers staged into the initramfs.
+          APT_OPTS="-o Acquire::Retries=10 -o Acquire::http::Timeout=30"
+          MIRRORS=(
+            "default"
+            "default"
+            "http://mirror.csclub.uwaterloo.ca/ubuntu-ports"
+            "http://mirror.us.leaseweb.net/ubuntu-ports"
+            "http://ftp.tu-chemnitz.de/pub/linux/ubuntu-ports"
+          )
+          rewrite_sources() {
+            local new="$1"
+            echo "Switching apt sources to $new"
+            sudo grep -rlE 'ports\.ubuntu\.com/ubuntu-ports' /etc/apt/ 2>/dev/null \
+              | xargs -r sudo sed -i \
+                  -e "s|https\?://[^ ]*ubuntu-ports|$new|g"
+          }
+          for i in "${!MIRRORS[@]}"; do
+            attempt=$((i + 1))
+            mirror="${MIRRORS[$i]}"
+            if [ "$mirror" != "default" ]; then
+              rewrite_sources "$mirror"
+            fi
+            echo "::group::apt-get attempt $attempt (mirror=$mirror)"
+            sudo apt-get $APT_OPTS update || true
+            if sudo apt-get $APT_OPTS install -y --no-install-recommends \
+                  --fix-missing \
+                  build-essential bc bison flex libelf-dev libssl-dev \
+                  cpio busybox-static \
+                  clang llvm libbpf-dev \
+                  linux-tools-common linux-tools-generic \
+                  linux-libc-dev \
+                  ${{ matrix.qemu_pkg }}; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "attempt $attempt (mirror=$mirror) failed; sleeping"
+            sleep 30
+          done
+          echo "apt-get failed after ${#MIRRORS[@]} attempts" >&2
+          exit 1
+
+      - name: Enable /dev/kvm for the runner user
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+            ls -la /dev/kvm
+          else
+            echo "::warning::/dev/kvm not present, falling back to TCG"
+          fi
+
+      - name: Read pinned kernel tag
+        id: kver
+        run: |
+          TAG=$(tr -d '[:space:]' < tests/kernel_version)
+          if ! echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+            echo "tests/kernel_version contents '$TAG' is not a valid tag" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Building kernel $TAG"
+
+      - name: Cache built kernel (mitigations config)
+        id: kcache
+        uses: actions/cache@v4
+        with:
+          # Separate cache from the default workflow: different fragment
+          # = different .config = different bzImage.
+          path: linux-build-mitigations
+          key: kernel-mitigations-${{ matrix.arch }}-${{ steps.kver.outputs.tag }}-${{ hashFiles('tests/kernel_config.fragment', 'tests/kernel_config_mitigations.fragment', 'tests/build_kernel.sh') }}
+
+      - name: Build kernel with mitigations fragment
+        if: steps.kcache.outputs.cache-hit != 'true'
+        env:
+          ARCH: ${{ matrix.arch }}
+          TAG: ${{ steps.kver.outputs.tag }}
+          OUT: linux-build-mitigations
+          EXTRA_FRAGMENT: tests/kernel_config_mitigations.fragment
+        run: tests/build_kernel.sh
+
+      - name: Build OOT modules
+        run: make KDIR="$PWD/linux-build-mitigations" -j"$(nproc)"
+
+      - name: Build initramfs (mitigations mode)
+        env:
+          KS_INITRAMFS_MODE: mitigations
+        run: tests/make_initramfs.sh
+
+      - name: Boot kernel + run mitigations
+        env:
+          ARCH: ${{ matrix.arch }}
+          QEMU: ${{ matrix.qemu_bin }}
+          KERNEL: linux-build-mitigations/${{ matrix.kbuild_image_path }}
+          INITRAMFS: initramfs.cpio.gz
+          SERIAL_LOG: ${{ github.workspace }}/serial.log
+          TIMEOUT: '1800'
+          DONE_MARKER: '===KSTEST_MITIGATIONS_DONE'
+        run: tests/run_qemu.sh
+
+      - name: Upload serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mitigations-serial-${{ matrix.arch }}
+          path: serial.log
+          if-no-files-found: ignore

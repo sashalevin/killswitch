@@ -1,0 +1,142 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 Sasha Levin <sashal@kernel.org>
+
+name: test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            kbuild_image_path: arch/x86/boot/bzImage
+            qemu_bin: qemu-system-x86_64
+            qemu_pkg: qemu-system-x86
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            kbuild_image_path: arch/arm64/boot/Image
+            qemu_bin: qemu-system-aarch64
+            qemu_pkg: qemu-system-arm
+    name: ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build + qemu deps
+        run: |
+          # GHA arm64 runners periodically lose reachability to
+          # ports.ubuntu.com.  Try the default mirror twice, then walk a
+          # sequence of independently-hosted ubuntu-ports mirrors until
+          # apt-get install succeeds.
+          APT_OPTS="-o Acquire::Retries=10 -o Acquire::http::Timeout=30"
+          MIRRORS=(
+            "default"
+            "default"
+            "http://mirror.csclub.uwaterloo.ca/ubuntu-ports"
+            "http://mirror.us.leaseweb.net/ubuntu-ports"
+            "http://ftp.tu-chemnitz.de/pub/linux/ubuntu-ports"
+          )
+          rewrite_sources() {
+            local new="$1"
+            echo "Switching apt sources to $new"
+            sudo grep -rlE 'ports\.ubuntu\.com/ubuntu-ports' /etc/apt/ 2>/dev/null \
+              | xargs -r sudo sed -i \
+                  -e "s|https\?://[^ ]*ubuntu-ports|$new|g"
+          }
+          for i in "${!MIRRORS[@]}"; do
+            attempt=$((i + 1))
+            mirror="${MIRRORS[$i]}"
+            if [ "$mirror" != "default" ]; then
+              rewrite_sources "$mirror"
+            fi
+            echo "::group::apt-get attempt $attempt (mirror=$mirror)"
+            sudo apt-get $APT_OPTS update || true
+            if sudo apt-get $APT_OPTS install -y --no-install-recommends \
+                  --fix-missing \
+                  build-essential bc bison flex libelf-dev libssl-dev \
+                  cpio busybox-static \
+                  clang llvm libbpf-dev \
+                  linux-tools-common linux-tools-generic \
+                  ${{ matrix.qemu_pkg }}; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "attempt $attempt (mirror=$mirror) failed; sleeping"
+            sleep 30
+          done
+          echo "apt-get failed after ${#MIRRORS[@]} attempts" >&2
+          exit 1
+
+      - name: Enable /dev/kvm for the runner user
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+            ls -la /dev/kvm
+          else
+            echo "::warning::/dev/kvm not present, falling back to TCG"
+          fi
+
+      - name: Read pinned kernel tag
+        id: kver
+        run: |
+          TAG=$(tr -d '[:space:]' < tests/kernel_version)
+          if ! echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+            echo "tests/kernel_version contents '$TAG' is not a valid tag" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Pinned tag: $TAG"
+
+      - name: Cache built kernel
+        id: kcache
+        uses: actions/cache@v4
+        with:
+          path: linux-build
+          key: kernel-${{ matrix.arch }}-${{ steps.kver.outputs.tag }}-${{ hashFiles('tests/kernel_config.fragment', 'tests/build_kernel.sh') }}
+
+      - name: Build kernel
+        if: steps.kcache.outputs.cache-hit != 'true'
+        env:
+          ARCH: ${{ matrix.arch }}
+          TAG: ${{ steps.kver.outputs.tag }}
+          OUT: linux-build
+        run: tests/build_kernel.sh
+
+      - name: Build OOT modules
+        run: make KDIR="$PWD/linux-build" -j"$(nproc)"
+
+      - name: Build initramfs
+        run: tests/make_initramfs.sh
+
+      - name: Boot kernel + run tests
+        env:
+          ARCH: ${{ matrix.arch }}
+          QEMU: ${{ matrix.qemu_bin }}
+          KERNEL: linux-build/${{ matrix.kbuild_image_path }}
+          INITRAMFS: initramfs.cpio.gz
+          SERIAL_LOG: ${{ github.workspace }}/serial.log
+        run: tests/run_qemu.sh
+
+      - name: Upload serial log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: serial-log-${{ matrix.arch }}
+          path: serial.log
+          if-no-files-found: ignore

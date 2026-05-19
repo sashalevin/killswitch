@@ -1,0 +1,21 @@
+*.o
+*.ko
+*.cmd
+*.mod
+*.mod.c
+.tmp_versions/
+.*.d
+.*.cmd
+Module.symvers
+modules.order
+.cache.mk
+
+# selftest binaries
+selftests/cve_31431_test
+selftests/cve_43284_test
+
+# CI artifacts
+initramfs.cpio.gz
+linux-build/
+serial.log
+*.serial.log

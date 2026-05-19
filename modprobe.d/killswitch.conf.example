@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 Sasha Levin <sashal@kernel.org>
+#
+# Drop into /etc/modprobe.d/killswitch.conf to engage killswitches at boot.
+#
+# Format: options killswitch engage=<sym1>=<retval1>,<sym2>=<retval2>,...
+#
+# Examples:
+#
+#   # Disable the AF_ALG sendmsg path until a real fix lands:
+#   options killswitch engage=af_alg_sendmsg=-1
+#
+#   # Multiple symbols, comma-separated, no spaces:
+#   options killswitch engage=af_alg_sendmsg=-1,ksmbd_smb2_negotiate=-22
+#
+# To take effect at boot, the module must also be loaded early:
+#   echo killswitch > /etc/modules-load.d/killswitch.conf
+#
+# To roll back, remove this file and reboot (or 'echo disengage_all >
+# /sys/kernel/security/killswitch/control' as root).
+
+# options killswitch engage=af_alg_sendmsg=-1

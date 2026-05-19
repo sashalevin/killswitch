@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 Sasha Levin <sashal@kernel.org>
+#
+# Merge fragment applied on top of defconfig.  Minimum set of CONFIG_*
+# the killswitch OOT module exercises, plus enough virtio/serial to
+# boot under qemu with an initramfs.
+
+# Killswitch dependencies
+#
+# CONFIG_FUNCTION_TRACER=y cascades into DYNAMIC_FTRACE,
+# DYNAMIC_FTRACE_WITH_REGS, and KPROBES_ON_FTRACE — all of which the
+# OOT module relies on (post_handler-bearing kprobe → ipmodify ops).
+CONFIG_KPROBES=y
+CONFIG_FTRACE=y
+CONFIG_FUNCTION_TRACER=y
+CONFIG_SECURITY=y
+CONFIG_SECURITYFS=y
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
+CONFIG_DEBUG_FS=y
+CONFIG_DEBUG_FS_ALLOW_ALL=y
+
+# Unsigned OOT modules must load.  Some defconfigs flip these on; force off.
+# CONFIG_MODULE_SIG_FORCE is not set
+# CONFIG_SECURITY_LOCKDOWN_LSM is not set
+
+# Initramfs boot
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+
+# virtio + serial for qemu
+CONFIG_VIRTIO=y
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_CONSOLE=y
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_AMBA_PL011=y
+CONFIG_SERIAL_AMBA_PL011_CONSOLE=y
+
+# engagebpf needs FUNCTION_ERROR_INJECTION so within_error_injection_list
+# is a real symbol the OOT module can kprobe.  The module ships its own
+# renamed ks_override_function_with_return / ks_just_return_func, so this
+# does not collide with the in-tree just_return_func.
+CONFIG_FUNCTION_ERROR_INJECTION=y
+
+# BPF stack for engagebpf-loaded programs.  BPF_EVENTS gates kprobe
+# attach; BPF_JIT lets the verifier accept programs with bpf_override_return;
+# BPF_KPROBE_OVERRIDE is what makes bpf_override_return actually exist.
+CONFIG_BPF=y
+CONFIG_BPF_SYSCALL=y
+CONFIG_BPF_EVENTS=y
+CONFIG_BPF_JIT=y
+CONFIG_BPF_KPROBE_OVERRIDE=y
+CONFIG_KPROBE_EVENTS=y

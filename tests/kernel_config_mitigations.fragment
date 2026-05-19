@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 Sasha Levin <sashal@kernel.org>
+#
+# Extra fragment merged on top of tests/kernel_config.fragment for the
+# mitigations-smoke test only.  Not used by the default CI run — the
+# subsystems below are what the per-CVE scripts under mitigations/
+# target with kprobes and bpf_override_return.  Enabling them keeps the
+# SKIP count low (every disabled subsystem means a SKIP for at least
+# one CVE because its target function isn't on the running kernel).
+#
+# Apply via:
+#   tests/build_kernel.sh ... EXTRA_FRAGMENT=tests/kernel_config_mitigations.fragment
+
+# Networking / qdiscs (tc_modify_qdisc, netem_change, fifo_hd_init,
+# br_cfm_frame_rx, tcf_ife_init, idletimer_tg_checkentry, etc.)
+CONFIG_NET=y
+CONFIG_NET_SCHED=y
+CONFIG_NET_SCH_NETEM=y
+CONFIG_NET_SCH_FIFO=y
+CONFIG_NET_CLS_BASIC=y
+CONFIG_NET_ACT_IFE=y
+CONFIG_BRIDGE=y
+CONFIG_BRIDGE_CFM=y
+CONFIG_MACVLAN=y
+
+# Netfilter / nf_tables (nf_tables_newflowtable, nf_tables_newsetelem,
+# pipapo_gc, xt_ct_tg_check_v2)
+CONFIG_NETFILTER=y
+CONFIG_NF_TABLES=y
+CONFIG_NF_TABLES_NETDEV=y
+CONFIG_NF_FLOW_TABLE=y
+CONFIG_NETFILTER_XTABLES=y
+CONFIG_NETFILTER_XT_TARGET_IDLETIMER=y
+CONFIG_NETFILTER_XT_TARGET_CT=y
+CONFIG_BRIDGE_NETFILTER=y
+
+# Wireless (cfg80211_rfkill_block_work)
+CONFIG_CFG80211=y
+CONFIG_MAC80211=y
+CONFIG_RFKILL=y
+
+# Bluetooth (l2cap_connect)
+CONFIG_BT=y
+CONFIG_BT_BREDR=y
+
+# io_uring (io_register_resize_rings)
+CONFIG_IO_URING=y
+
+# AppArmor (aa_replace_profiles, aa_dfa_unpack)
+CONFIG_SECURITY_APPARMOR=y
+CONFIG_DEFAULT_SECURITY_APPARMOR=y
+
+# ksmbd (ksmbd_session_lookup_slowpath, ksmbd_auth_ntlmv2)
+CONFIG_SMB_SERVER=y
+CONFIG_SMB_SERVER_KERBEROS5=y
+
+# TLS upper-level protocol (tls_init)
+CONFIG_TLS=y
+
+# XDP redirect targets (dev_map_enqueue, dev_map_enqueue_multi, dev_xdp_enqueue)
+CONFIG_XDP_SOCKETS=y
+
+# Generic netlink event handler (handle_generic_event)
+CONFIG_GENERIC_NET_UTILS=y
+
+# Some mitigations target obscure drivers (amdxdna_get_ubuf,
+# vmw_execbuf_process, xe_observation_ioctl, privcmd_ioctl).  These
+# aren't in defconfig and we don't pull them in — the corresponding
+# mitigations will SKIP, which is the documented outcome.
